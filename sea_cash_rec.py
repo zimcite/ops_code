@@ -95,7 +95,7 @@ def load_zen_unwind_performance(broker, date, ops_param):
         logger.warning('There is no ZEN swap unwind cashflow on settle date = {} for broker {}'.format(date, broker))
     return df
 
-def get_swap_settlement_report_path(broker, date, ops_param):
+def get_swap_settlement_report_path(broker, date, ops_param, verbose=True):
     filepath = ops_param['workflow_path'] + r'Archive\{}\{}'.format(date.strftime('%Y%m%d'),broker)
     if broker == 'GS':
         includes = ['Custody_Settle_D_301701']
@@ -118,10 +118,11 @@ def get_swap_settlement_report_path(broker, date, ops_param):
         filename = files[0]
         return os.path.join(filepath, filename)
     else:
-        logger.warning('Cannot find {} report for {} in {}'.format(includes[0],broker,filepath))
+        if verbose:
+            logger.warning('Cannot find {} report for {} in {}'.format(includes[0],broker,filepath))
         return
 
-def get_swap_activity_report_path(broker, date, ops_param):
+def get_swap_activity_report_path(broker, date, ops_param, verbose=True):
     filepath = ops_param['workflow_path'] + r'Archive\{}\{}'.format(date.strftime('%Y%m%d'),broker)
     if broker == 'GS':
         includes = ['CFD_Daily_Activi_287575']
@@ -144,7 +145,8 @@ def get_swap_activity_report_path(broker, date, ops_param):
         filename = files[0]
         return os.path.join(filepath, filename)
     else:
-        logger.warning('Cannot find {} report for {} in {}'.format(includes[0],broker,filepath))
+        if verbose:
+            logger.warning('Cannot find {} report for {} in {}'.format(includes[0],broker,filepath))
         return
 
 def load_broker_swap_settlement_cashflow(broker, date, ops_param, column_header, trade_dates):
@@ -154,6 +156,14 @@ def load_broker_swap_settlement_cashflow(broker, date, ops_param, column_header,
     UBS: financing paid at ME
     JPM: financing paid when unwind
     MS: financing paid when unwind
+
+    date is T0
+    GS/BOAML/UBS:
+        - retrieve trade date from zen cash tickets
+        - loop through trade date activity report to load unwind performance cashflow
+    JPM/MS:
+        - first try T0 settlement report
+        - if not found, goes back to T-1 settlement report
     '''
     if broker == 'GS':
         if len(trade_dates) > 0:
@@ -209,28 +219,33 @@ def load_broker_swap_settlement_cashflow(broker, date, ops_param, column_header,
         else:
             df = pd.DataFrame(columns=column_header)
     elif broker == 'JPM':
-        filepath = get_swap_settlement_report_path(broker, date, ops_param)
-        if filepath is not None:
-            df = pd.read_csv(filepath)
-            df.columns = column_header
-            df = df[df['Level']=='Trade']
-            df = df[df['Swap Pay Date']== date.strftime('%Y-%m-%d')]
-            if df.empty:
-                logger.warning('There is no {} swap unwind cashflow on settle date = {} as sourced from {}'.format(broker, date, filepath))
-        else:
-            df = pd.DataFrame(columns=column_header)
+        df = pd.DataFrame(columns=column_header)
+        for date_tmp in [date,date-BDay(1)]:
+            filepath = get_swap_settlement_report_path(broker, date_tmp, ops_param, verbose=False if date_tmp==date else True)
+            if filepath is not None:
+                df = pd.read_csv(filepath)
+                df.columns = column_header
+                df = df[df['Level']=='Trade']
+                df = df[df['Swap Pay Date']== date.strftime('%Y-%m-%d')]
+                if df.empty:
+                    logger.warning('There is no {} swap unwind cashflow on settle date = {} as sourced from {}'.format(broker, date, filepath))
+                break
+            else:
+                continue
     elif broker == 'MS':
-        filepath = get_swap_settlement_report_path(broker, date, ops_param)
-        if filepath is not None:
-            df = pd.read_csv(filepath,skiprows=1)
-            df.columns = column_header
-            df = df[df['Account Number'] == '038CAFIQ0']
-            df = df[df['Payment Date'] == date.strftime('%Y-%m-%d')]
-            if df.empty:
-                logger.warning('There is no {} swap unwind cashflow on settle date = {} as sourced from {}'.format(broker, date, filepath))
-        else:
-            df = pd.DataFrame(columns=column_header)
-
+        df = pd.DataFrame(columns=column_header)
+        for date_tmp in [date,date-BDay(1)]:
+            filepath = get_swap_settlement_report_path(broker, date_tmp, ops_param, verbose=False if date_tmp==date else True)
+            if filepath is not None:
+                df = pd.read_csv(filepath,skiprows=1)
+                df.columns = column_header
+                df = df[df['Account Number'] == '038CAFIQ0']
+                df = df[df['Payment Date'] == date.strftime('%Y-%m-%d')]
+                if df.empty:
+                    logger.warning('There is no {} swap unwind cashflow on settle date = {} as sourced from {}'.format(broker, date, filepath))
+                break
+            else:
+                continue
 
     return df
 
@@ -373,7 +388,8 @@ def main(argv):
     print ("called with " + str(len(argv)) + " paramenters " + argv[0])
     if (len(argv) > 0) and (type(ou.text2date(argv[0])) == datetime.date) :
         print ("paramenters 0 " + argv[0])
-        date = ou.text2date(argv[0])
+        #input date from v2 is T-1 so plus 1 bd to get T
+        date = ou.text2date(argv[0])+BDay(1)
     if (len(argv) > 1)  and argv[1] in ['GS','BOAML','UBS','JPM','MS'] :
         print ("paramenters 1 " + argv[1])
         broker = argv[1]
