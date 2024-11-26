@@ -5,35 +5,10 @@ from pandas.tseries.offsets import BDay
 import sys
 
 
-code_path = r'S:\\Operations\Workflow\zim_ops'
 template_path = r'S:\Operations\Workflow\zim_ops\ops_code_py311\sea_broker_report_template\\'
 output_path = r'S:\Operations\Workflow\tradefillsmacro\cash_rec\cash_tmp\\'
 log_file = os.path.join(output_path,'logs.txt')
-sys.path.append(code_path)
 import ops_utils as ou
-
-def filter_files(filepath, includes=[], excludes=[]):
-    return [x for x in os.listdir(filepath)
-            if all(i in x for i in includes)
-            and not any(e in x for e in excludes)]
-
-class Logger:
-    def __init__(self, log_file):
-        self.log_file = log_file
-        open(log_file, 'w').close()
-
-    def info(self, message):
-        timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        msg = "{} - INFO - {}".format(timestamp,message)
-        print(msg, flush=True)
-
-    def warning(self, message):
-        timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        msg = "{} - WARNING - {}".format(timestamp, message)
-        with open(self.log_file, 'a') as f:
-            f.write(msg + '\n')
-        print(msg, flush=True)
-
 
 def merge_txt_to_csv(csv_path, txt_path, column_name):
     df = pd.read_csv(csv_path)
@@ -51,17 +26,6 @@ def merge_txt_to_csv(csv_path, txt_path, column_name):
     df = pd.concat([df, pd.DataFrame(new_rows)], ignore_index=True)
     df = df[original_columns]  # Restore original column order
     df.to_csv(csv_path, index=False)
-    return df
-
-
-def merge_df_list(dflist):
-
-    if not dflist:
-        return pd.DataFrame()
-
-    # Use concat instead of merge since all columns are the same
-    df = pd.concat(dflist, axis=0, ignore_index=True)
-
     return df
 
 
@@ -112,7 +76,7 @@ def get_swap_settlement_report_path(broker, date, ops_param, verbose=True):
     elif broker == 'MS':
         includes = ['ZIM-EQSWAP24MX']
         excludes = []
-    files = filter_files(filepath, includes, excludes)
+    files = ou.filter_files(filepath, includes, excludes)
     files.sort(key=lambda x: os.path.getmtime(os.path.join(filepath, x)), reverse=True)
     if len(files) > 0:
         filename = files[0]
@@ -139,7 +103,7 @@ def get_swap_activity_report_path(broker, date, ops_param, verbose=True):
     elif broker == 'MS':
         includes = []
         excludes = []
-    files = filter_files(filepath, includes, excludes)
+    files = ou.filter_files(filepath, includes, excludes)
     files.sort(key=lambda x: os.path.getmtime(os.path.join(filepath, x)), reverse=True)
     if len(files) > 0:
         filename = files[0]
@@ -151,11 +115,11 @@ def get_swap_activity_report_path(broker, date, ops_param, verbose=True):
 
 def load_broker_swap_settlement_cashflow(broker, date, ops_param, column_header, trade_dates):
     '''
-    GS: financing paid at ME
-    BOAML: financing paid when unwind
-    UBS: financing paid at ME
-    JPM: financing paid when unwind
-    MS: financing paid when unwind
+    GS: unwind financing paid at ME along with reset financing
+    BOAML: unwind financing paid when unwind
+    UBS: unwind financing paid after ME along with reset financing
+    JPM: unwind financing paid when unwind
+    MS: unwind financing paid when unwind
 
     date is T0
     GS/BOAML/UBS:
@@ -179,7 +143,7 @@ def load_broker_swap_settlement_cashflow(broker, date, ops_param, column_header,
                 else:
                     df_temp = pd.DataFrame(columns=column_header)
                 dfs.append(df_temp)
-            df = merge_df_list(dfs)
+            df = ou.merge_df_list(dfs,'v')
         else:
             df = pd.DataFrame(columns=column_header)
     elif broker == 'BOAML':
@@ -196,7 +160,7 @@ def load_broker_swap_settlement_cashflow(broker, date, ops_param, column_header,
                 else:
                     df_temp = pd.DataFrame(columns=column_header)
                 dfs.append(df_temp)
-            df = merge_df_list(dfs)
+            df = ou.merge_df_list(dfs,'v')
 
         else:
             df = pd.DataFrame(columns=column_header)
@@ -214,7 +178,7 @@ def load_broker_swap_settlement_cashflow(broker, date, ops_param, column_header,
                 else:
                     df_temp = pd.DataFrame(columns=column_header)
                 dfs.append(df_temp)
-            df = merge_df_list(dfs)
+            df = ou.merge_df_list(dfs,'v')
 
         else:
             df = pd.DataFrame(columns=column_header)
@@ -375,13 +339,13 @@ def reconcile_broker_swap_settlement_cashflow(broker, date, ops_param, column_he
 
 def main(argv):
     global logger
-    logger = Logger(log_file)
+    logger = ou.Logger('INFO',log_file)
     column_headers = {
-        'GS': list(pd.read_excel(os.path.join(template_path, filter_files(template_path, includes=['GS'])[0]),skiprows=7).columns),
-        'BOAML': list(pd.read_excel(os.path.join(template_path, filter_files(template_path, includes=['BOAML'])[0]),skiprows=[0, 2]).columns),
-        'UBS': list(pd.read_csv(os.path.join(template_path, filter_files(template_path, includes=['UBS'])[0])).columns),
-        'JPM': list(pd.read_csv(os.path.join(template_path, filter_files(template_path, includes=['JPM'])[0])).columns),
-        'MS': list(pd.read_csv(os.path.join(template_path, filter_files(template_path, includes=['MS'])[0]),skiprows=1).columns)
+        'GS': list(pd.read_excel(os.path.join(template_path, ou.filter_files(template_path, includes=['GS'])[0]),skiprows=7).columns),
+        'BOAML': list(pd.read_excel(os.path.join(template_path, ou.filter_files(template_path, includes=['BOAML'])[0]),skiprows=[0, 2]).columns),
+        'UBS': list(pd.read_csv(os.path.join(template_path, ou.filter_files(template_path, includes=['UBS'])[0])).columns),
+        'JPM': list(pd.read_csv(os.path.join(template_path, ou.filter_files(template_path, includes=['JPM'])[0])).columns),
+        'MS': list(pd.read_csv(os.path.join(template_path, ou.filter_files(template_path, includes=['MS'])[0]),skiprows=1).columns)
     }
 
     ops_param = ou.get_ops_param('ZEN_SEA')
