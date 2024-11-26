@@ -154,7 +154,8 @@ def load_broker_swap_settlement_cashflow(broker, date, ops_param, column_header,
                 if filepath is not None:
                     df_temp = pd.read_excel(filepath, skiprows=[0,2])
                     df_temp.columns = column_header
-                    df_temp = df_temp[df_temp['Report Date'] == trade_date.strftime('%Y-%m-%d')]
+                    #df_temp = df_temp[df_temp['Report Date'] == trade_date.strftime('%Y-%m-%d')]
+                    df_temp = df_temp[df_temp['Payment Date'] == date]
                     if df_temp.empty:
                         logger.warning('There is no {} swap unwind cashflow on settle date = {} as sourced from {}'.format(broker,date, filepath))
                 else:
@@ -173,6 +174,7 @@ def load_broker_swap_settlement_cashflow(broker, date, ops_param, column_header,
                     df_temp = pd.read_csv(filepath)
                     df_temp.columns = column_header
                     df_temp = df_temp[df_temp['Account Name'] == 'BLUEHARBOUR MAP I LP-ZENTIFIC']
+                    df_temp = df_temp[df_temp['Settle Date'] == date.strftime('%m/%d/%Y')]
                     if df_temp.empty:
                         logger.warning('There is no {} swap unwind cashflow on settle date = {} as sourced from {}'.format(broker,date, filepath))
                 else:

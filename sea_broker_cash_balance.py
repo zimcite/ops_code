@@ -72,18 +72,24 @@ def get_broker_nonUSD_balance_report_path(broker, date, ops_param, verbose=True)
 
 def load_broker_USD_balance(broker, date, ops_param):
     USD = None
+    filepath = get_broker_USD_balance_report_path(broker, date, ops_param)
+
     if broker=='GS':
-        filepath = get_broker_USD_balance_report_path(broker, date, ops_param)
         df = pd.read_excel(filepath, sheetname='Settle Date Summary')
         USD = df[df['Currency']=='U S DOLLAR'].loc[:,'Ending Balance'].iloc[0]
+
     elif broker=='BOAML':
-        filepath = get_broker_USD_balance_report_path(broker, date, ops_param)
         df = pd.read_csv(filepath)
         USD = df[df['ISO Currency Code']=='USD'].loc[:,'SD Cash Reporting CCY'].sum()
+
     elif broker=='UBS':
-        pass
+        df = pd.read_csv(filepath)
+        USD = df[df['Account Name']=='BLUEHARBOUR MAP I LP-ZENTIFIC' & df['CCY']=='USD'].loc[:,'SD Cash Balance (Base)'].sum()
+
+
     elif broker=='JPM':
         pass
+
     elif broker=='MS':
         pass
 
@@ -92,30 +98,32 @@ def load_broker_USD_balance(broker, date, ops_param):
 
 def load_broker_nonUSD_balance(broker, date, ops_param):
     currencies = ['HKD', 'SGD', 'IDR', 'THB', 'NOK']
-    non_USD = dict.fromkeys(currencies, 0)  # Creates {currency: 0} for each currency
+    non_USD = dict.fromkeys(currencies, 0)
+    filepath = get_broker_USD_balance_report_path(broker, date, ops_param)
     if broker=='GS':
-        filepath = get_broker_USD_balance_report_path(broker, date, ops_param)
         df = pd.read_excel(filepath, sheetname='Trade Date Summary')
         ISO_map = {'SINGAPORE DOLLAR':'SGD',
                    'HONG KONG DOLLAR':'HKD'}
-        for currency in currencies:
+        for currency in set(df['Currency']):
             if currency not in ISO_map:
-                Logger.error('')
+                Logger.error('Found unidentified currency in {}'.format(filepath))
+                sys.exit(0)
+            non_USD[ISO_map[currency]] = df[df['Currency']==currency].loc[:,'Ending Balance'].iloc[0]
 
-
-        usd = df[df['Currency']=='U S DOLLAR'].loc[:,'Ending Balance'].iloc[0]
     elif broker=='BOAML':
-        filepath = get_broker_USD_balance_report_path(broker, date, ops_param)
         df = pd.read_csv(filepath)
-        for currency in currencies:
-            try:
-                non_USD[currency] = df[df['ISO Currency Code']==currency].loc[:,'SD Cash Reporting CCY'].sum()
-            except:
-                pass
+        for currency in set(df['ISO Currency Code']):
+            non_USD[currency] = df[df['ISO Currency Code']==currency].loc[:,'SD Cash Reporting CCY'].sum()
+
     elif broker=='UBS':
+        df = pd.read_csv(filepath)
+        for currency in set(df['CCY']):
+            non_USD[currency] = df[df['ISO Currency Code'] == currency].loc[:, 'SD Cash Reporting CCY'].sum()
         pass
+
     elif broker=='JPM':
         pass
+
     elif broker=='MS':
         pass
     print(non_USD)
