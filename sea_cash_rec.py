@@ -295,7 +295,7 @@ def reconcile_broker_swap_settlement_cashflow(broker, date, ops_param, column_he
                            )
         # to align df_broker with legacy V2 file
         df_broker.rename(columns={'Net PnL': 'UBS_NetAmount'}, inplace=True)
-        df_broker.insert(21, 'bb_code', ticker_map.set_index('ric', drop=True).loc[df_broker['RIC'], 'bb_code'])
+        df_broker.insert(21, 'bb_code', ticker_map.set_index('ric', drop=True).loc[df_broker['RIC'], 'bb_code'].values)
 
     elif broker == 'JPM':
         df_break = _helper(df_zen=df_zen,
