@@ -218,8 +218,9 @@ def load_broker_swap_settlement_cashflow(broker, date, ops_param, column_header,
 def reconcile_broker_swap_settlement_cashflow(broker, date, ops_param, column_header):
 
     def _helper(df_zen, df_broker, broker, bb_code_col_name, performance_col_name):
-        perf_dict1 = dict(zip(df_zen['bb_code'], df_zen['accrued_fin']+df_zen['cash_local']))
-        perf_dict2 = dict(zip(df_broker[bb_code_col_name], df_broker[performance_col_name]))
+        perf_dict1 = (df_zen.groupby('bb_code')['accrued_fin'].sum() + df_zen.groupby('bb_code')['cash_local'].sum()).to_dict()
+        perf_dict2 = df_broker.groupby(bb_code_col_name)[performance_col_name].sum().to_dict()
+
         all_bb_codes = set(perf_dict1) | set(perf_dict2)
         result = []
         for bb in all_bb_codes:
