@@ -340,8 +340,15 @@ def reconcile_broker_swap_settlement_cashflow(broker, date, ops_param, column_he
     #add log to break file (legacy compatibile)
     merge_txt_to_csv(output_path+'BREAK_sea_{}.csv'.format(broker.lower()), log_file,'break')
 
+
+
     #add sum to break file csv (legacy compatibile)
     df_temp = pd.read_csv(output_path+'BREAK_sea_{}.csv'.format(broker.lower()))
+
+    df_temp['abs_diff'] = abs(df_temp['diff']) #sort by abs diff to fix the sequence
+    df_temp = df_temp.sort(columns=['abs_diff'], ascending=[False])
+    df_temp = df_temp.drop('abs_diff', axis=1)
+
     df_temp.loc[len(df_temp.index), ['Z_NetAmount','diff']] = ['sum of performance break <={}'.format(break_threshold),
                                                                round(df_break[df_break['break'] == ""].loc[:,'diff'].sum(),2)
                                                                ]
@@ -351,8 +358,9 @@ def reconcile_broker_swap_settlement_cashflow(broker, date, ops_param, column_he
     df_temp.loc[len(df_temp.index), ['Z_NetAmount','diff']] = ['sum of performance break'.format(break_threshold),
                                                                round(df_break.loc[:,'diff'].sum(),2)
                                                                ]
+
     df_temp.to_csv(output_path+'BREAK_sea_{}.csv'.format(broker.lower()), index=False)
-    print(pd.read_csv(output_path+'BREAK_sea_{}.csv'.format(broker.lower())))
+
     return
 
 def main(argv):
