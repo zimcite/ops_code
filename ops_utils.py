@@ -1429,6 +1429,19 @@ class Logger:
 
 
 def filter_files(filepath, includes=[], excludes=[]):
-    return [x for x in os.listdir(filepath)
+    '''
+    Sort by modification time(descending), then by size(descending)
+    Return the latest and largest file or None if file not found
+    '''
+    files = [x for x in os.listdir(filepath)
             if all(i in x for i in includes)
             and not any(e in x for e in excludes)]
+    files.sort(key=lambda x: os.path.getmtime(os.path.join(filepath, x)), reverse=True)
+    newest_time = os.path.getmtime(os.path.join(filepath, files[0]))
+    newest_files = [f for f in files if os.path.getmtime(os.path.join(filepath, f)) == newest_time]
+    if len(newest_files) > 1:
+        newest_files.sort(key=lambda x: os.path.getsize(os.path.join(filepath, x)), reverse=True)
+        files[:len(newest_files)] = newest_files
+    if len(files) > 0:
+        return files[0]
+    return

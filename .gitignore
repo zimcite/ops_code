@@ -3,3 +3,4 @@
 
 #Pycharm IDE
 .idea
+*.pyc

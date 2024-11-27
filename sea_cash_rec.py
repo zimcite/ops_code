@@ -77,11 +77,9 @@ def get_swap_settlement_report_path(broker, date, ops_param, verbose=True):
     elif broker == 'MS':
         includes = ['ZIM-EQSWAP24MX']
         excludes = []
-    files = ou.filter_files(filepath, includes, excludes)
-    files.sort(key=lambda x: os.path.getmtime(os.path.join(filepath, x)), reverse=True)
-    if len(files) > 0:
-        filename = files[0]
-        return os.path.join(filepath, filename)
+    file = ou.filter_files(filepath, includes, excludes)
+    if file is not None:
+        return os.path.join(filepath, file)
     else:
         if verbose:
             logger.warning('Cannot find {} report for {} in {}'.format(includes[0],broker,filepath))
@@ -104,11 +102,9 @@ def get_swap_activity_report_path(broker, date, ops_param, verbose=True):
     elif broker == 'MS':
         includes = []
         excludes = []
-    files = ou.filter_files(filepath, includes, excludes)
-    files.sort(key=lambda x: os.path.getmtime(os.path.join(filepath, x)), reverse=True)
-    if len(files) > 0:
-        filename = files[0]
-        return os.path.join(filepath, filename)
+    file = ou.filter_files(filepath, includes, excludes)
+    if file is not None:
+        return os.path.join(filepath, file)
     else:
         if verbose:
             logger.warning('Cannot find {} report for {} in {}'.format(includes[0],broker,filepath))
@@ -367,11 +363,11 @@ def main(argv):
     global logger
     logger = ou.Logger('INFO',log_file)
     column_headers = {
-        'GS': list(pd.read_excel(os.path.join(template_path, ou.filter_files(template_path, includes=['GS'])[0]),skiprows=7).columns),
-        'BOAML': list(pd.read_excel(os.path.join(template_path, ou.filter_files(template_path, includes=['BOAML'])[0]),skiprows=[0, 2]).columns),
-        'UBS': list(pd.read_csv(os.path.join(template_path, ou.filter_files(template_path, includes=['UBS'])[0])).columns),
-        'JPM': list(pd.read_csv(os.path.join(template_path, ou.filter_files(template_path, includes=['JPM'])[0])).columns),
-        'MS': list(pd.read_csv(os.path.join(template_path, ou.filter_files(template_path, includes=['MS'])[0]),skiprows=1).columns)
+        'GS': list(pd.read_excel(os.path.join(template_path, ou.filter_files(template_path, includes=['GS'])),skiprows=7).columns),
+        'BOAML': list(pd.read_excel(os.path.join(template_path, ou.filter_files(template_path, includes=['BOAML'])),skiprows=[0, 2]).columns),
+        'UBS': list(pd.read_csv(os.path.join(template_path, ou.filter_files(template_path, includes=['UBS']))).columns),
+        'JPM': list(pd.read_csv(os.path.join(template_path, ou.filter_files(template_path, includes=['JPM']))).columns),
+        'MS': list(pd.read_csv(os.path.join(template_path, ou.filter_files(template_path, includes=['MS'])),skiprows=1).columns)
     }
 
     ops_param = ou.get_ops_param('ZEN_SEA')

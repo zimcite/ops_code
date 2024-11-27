@@ -29,13 +29,11 @@ def get_broker_USD_balance_report_path(broker, date, ops_param, verbose=True):
     elif broker == 'MS':
         includes = ['ZIM-MAC002TDX-NormalizedTradeDateActivityExtra-CAED-Daily']
         excludes = []
-    files = ou.filter_files(filepath, includes, excludes)
-    files.sort(key=lambda x: os.path.getmtime(os.path.join(filepath, x)), reverse=True)
-    if len(files) > 0:
-        filename = files[0]
+    file = ou.filter_files(filepath, includes, excludes)
+    if file is not None:
         if verbose:
-            logger.info('read USD balance for {} from report {} in {}'.format(broker, filename, filepath))
-        return os.path.join(filepath, filename)
+            logger.info('read USD balance for {} from report {} in {}'.format(broker, file, filepath))
+        return os.path.join(filepath, file)
     else:
         if verbose:
             logger.warning('Cannot find {} report for {} in {}'.format(includes[0],broker,filepath))
@@ -58,13 +56,11 @@ def get_broker_nonUSD_balance_report_path(broker, date, ops_param, verbose=True)
     elif broker == 'MS':
         includes = ['ZIM-MAC002TDX-NormalizedTradeDateActivityExtra-CAED-Daily']
         excludes = []
-    files = ou.filter_files(filepath, includes, excludes)
-    files.sort(key=lambda x: os.path.getmtime(os.path.join(filepath, x)), reverse=True)
-    if len(files) > 0:
-        filename = files[0]
+    file = ou.filter_files(filepath, includes, excludes)
+    if file is not None:
         if verbose:
-            logger.info('read non-USD balance for {} from report {} in {}'.format(broker, filename, filepath))
-        return os.path.join(filepath, filename)
+            logger.info('read non-USD balance for {} from report {} in {}'.format(broker, file, filepath))
+        return os.path.join(filepath, file)
     else:
         if verbose:
             logger.warning('Cannot find {} report for {} in {}'.format(includes[0], broker, filepath))
