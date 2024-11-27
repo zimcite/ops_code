@@ -40,13 +40,15 @@ debug = False
 class email_bulk:
     
     def __init__(self, broker, mode):
-        self.broker = broker
+        self.broker = broker 
         if debug:
             self.date = datetime.date(2024,11,14)
         elif mode == 'report':
             self.date = (datetime.datetime.now().date() - pd.tseries.offsets.BDay(1)).date() # Set to last business day
+            # self.date = (datetime.datetime.now() - datetime.timedelta(days=1)).date()
         else:
             self.date = datetime.datetime.now().date()
+            # self.date = (datetime.datetime.now() - datetime.timedelta(days=1)).date()
     
     def update_body(self, title, dest, broker, keywords=None, market=None):
         self.title = title
@@ -69,8 +71,13 @@ class attachment:
     def ms_recall_file(self):
         """
         Description: Get recall file for Morgan Stanley 
+        
 
         """
+        # if self.xlsfilename.endswith('- recall.xls') or self.xlsfilename.endswith('- market trade.xls'):
+        #     print(f"[DEBUG] File already amended: {self.xlsfilename}. Skipping amendment.")
+        #     return
+        
         df = pd.read_excel(self.xlsfilename)
         try:
             if df['Commission Charge'].astype(float)[0] < 0 : 
@@ -186,6 +193,65 @@ def ops_zim_mailbox_report(mail_line, mail, imapsession) :
         mailbox_processing(this_id, imapsession, mail, part, mode='report')
 
 def mailbox_processing(this_id, imapsession, mail, part, mode):
+
+
+    def clean_up_older_versions(new_file_path,suffix_filter=None):
+        """
+        Compare the new file with existing files in the folder and delete older versions.
+        Args:
+            new_file_path: Full path of the new file just saved into the folder.
+        """
+        folder_path = os.path.dirname(new_file_path)
+        new_file_name = os.path.basename(new_file_path)
+        core_name_match = re.match(r"(.*)_\d+\.\w+$", new_file_name)  
+        if not core_name_match:
+            # print("[DEBUG] Unable to extract core name for file: {}".format(new_file_name))
+            return
+
+        core_name = core_name_match.group(1)
+        # print("[DEBUG] Core filename for comparison: {}".format(core_name))
+
+        # List all files in the folder that match the core filename
+        existing_files = [
+            f for f in os.listdir(folder_path)
+            if f.startswith(core_name) and re.search(r"_(\d+)\.\w+$", f) and
+            (suffix_filter is None or suffix_filter in f) 
+        ]
+
+        # Extract version numbers from the filenames
+        file_versions = []
+        # import pdb; pdb.set_trace()
+        for file in existing_files:
+            if suffix_filter:
+                # Find the version number by slicing from the back until a space
+                parts = file.rsplit(" ", 1)  # Split at the last space
+                if len(parts) > 1 and re.match(r"_(\d+)", parts[1]):
+                    version = int(parts[1].lstrip("_").split(".")[0])  # Extract version before file extension
+                    file_versions.append((file, version))
+                    print("[DEBUG] Found version {} in file: {}".format(version, file))
+            else:
+                # Use regex to extract version number
+                version_match = re.search(r"_(\d+)\.\w+$", file)
+                if version_match:
+                    version = int(version_match.group(1))
+                    file_versions.append((file, version))
+                    # print("Found version {} in file: \n{}".format(version, file))
+
+        # Determine the highest version
+        if not file_versions:
+            print("[DEBUG] No matching versions found for {}.".format(core_name))
+            return
+
+        file_versions.sort(key=lambda x: x[1], reverse=True)  # Sort by version descending
+        highest_version = file_versions[0][1]
+        # print("Highest version for \n{}: {}".format(core_name, highest_version))
+
+        # Delete files with lower versions
+        for file, version in file_versions:
+            if version < highest_version:
+                file_to_delete = os.path.join(folder_path, file)
+                print("Deleting older version: \n{}".format(file_to_delete))
+                os.remove(file_to_delete)
     '''
     Description: Main function of this script: to get recap files from emails in broker
     '''
@@ -211,53 +277,6 @@ def mailbox_processing(this_id, imapsession, mail, part, mode):
                 # print("Processing part with Content-Type: {}".format(this_part['Content-Type']))
                 # print("Attachment filename: {}".format(this_part.get_filename()))
 
-                # Normalize filenames by slicing the last 3 characters (e.g., '_3', '_5')
-                core_filename = os.path.basename(part.xlsfilename)[:-3]  # Remove last 3 characters from the filename
-
-                # Check existing files with the same core name
-                existing_files = [
-                    f for f in os.listdir(os.path.dirname(part.xlsfilename))
-                    if core_filename in f
-                ]
-
-                # Compare based on email received time
-                if existing_files:
-                    # Find the latest file based on its timestamp
-                    latest_time = None
-                    for file in existing_files:
-                        result, existing_messageparts = imapsession.fetch(this_id.decode(), '(RFC822)')
-                        existing_msg = e.message_from_bytes(existing_messageparts[0][1])
-                        existing_datestr = existing_msg["Date"]
-                        existing_kwds = {}
-                        DateHeader.parse(existing_datestr, existing_kwds)
-                        existing_time = existing_kwds['datetime'].astimezone(tz=datetime.timezone.utc)
-                        # print(f"[DEBUG] Existing file received time: {existing_time}")
-                        # print(f"[DEBUG] New file received time (mail_time): {mail_time}")
-
-
-                        if latest_time is None or existing_time > latest_time:
-                            latest_time = existing_time
-                            print(f"[DEBUG] Updated latest time to: {latest_time}")
-
-                    print(f"[DEBUG] New file received time (mail_time): {mail_time}")
-                    print(f"[DEBUG] Existing files matching core name: {existing_files}")
-                    print(f"[DEBUG] Parsed mail_time: {mail_time}")
-                    print(f"[DEBUG] Parsed latest_time from existing files: {latest_time}")
-                    print(f"[DEBUG] Comparing mail_time ({mail_time}) with latest_time ({latest_time})")
-
-                    # Compare the latest existing file's time with the current file
-                    if mail_time > latest_time:
-                        print("Detected an older file received at {}. Replacing it with the latest received at {}.".format(
-                            latest_time, mail_time))
-                        # Overwrite the file
-                        with open(part.xlsfilename, "wb+") as f:
-                            f.write(part.xlsbytes)
-                            f.close()
-                            print(f"File saved and overwritten: {part.xlsfilename}")
-                    else:
-                        print("Existing file is newer or has the same timestamp. No replacement needed.")
-
-
                 if part.title.find('UBS EOD Report') > -1:
                     part.replace_header('Content-Type', 'application/octet-stream')
 
@@ -272,18 +291,24 @@ def mailbox_processing(this_id, imapsession, mail, part, mode):
                     datestr = mail.date.strftime("%d%b%Y")
                     part.xlsfilename = part.xlsfilename.replace(' ' + datestr, '')
                 # files delisting
-                part.delisting(mode) 
-                
-                if part.placing and (not part.skipping): 
+                part.delisting(mode)
+                # print("[DEBUG] part.placing: {}, part.skipping: {}".format(part.placing, part.skipping))
+
+
+                if part.placing and (not part.skipping):
+
                     with open(part.xlsfilename, "wb+") as f : 
                         f.write(part.xlsbytes)
                         f.close()
                         print('...')
                         if mode == 'auto':
                             part.placing = False
+                        
                             
                         if part.filename.find('Pre allocation China Stocks') > -1 or part.filename.find('Pre_allocation_China_Stocks') > -1: # MS fill CN and recall in the files with same format
+                            part.placing=True
                             part.ms_recall_file()
+                            clean_up_older_versions(part.xlsfilename,suffix_filter="- market trade")
                             
                             # if part.title.find('Swaps Execution Report - ZENTIFIC') > -1: # JPM filename to fill ZEN_NHL
 #                            part.filename = part.jpm_account_fill()
@@ -297,7 +322,9 @@ def mailbox_processing(this_id, imapsession, mail, part, mode):
                                 print('GS India trade recap in, auto unencrypted!')
                             except:
                                 print('Fail to unencrypt GS India trade recap! Plsease manually open and unencrypt')
-                            
+                    clean_up_older_versions(part.xlsfilename)
+                        
+                    
                     
             except:
                 pass
