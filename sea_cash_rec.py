@@ -340,10 +340,16 @@ def reconcile_broker_swap_settlement_cashflow(broker, date, ops_param, column_he
     #add log to break file (legacy compatibile)
     merge_txt_to_csv(output_path+'BREAK_sea_{}.csv'.format(broker.lower()), log_file,'break')
 
-    #add sum of within threshold break to break file csv (legacy compatibile)
+    #add sum to break file csv (legacy compatibile)
     df_temp = pd.read_csv(output_path+'BREAK_sea_{}.csv'.format(broker.lower()))
     df_temp.loc[len(df_temp.index), ['Z_NetAmount','diff']] = ['sum of performance break <{}'.format(break_threshold),
                                                                round(df_break[df_break['diff']<break_threshold].loc[:,'diff'].sum(),2)
+                                                               ]
+    df_temp.loc[len(df_temp.index), ['Z_NetAmount','diff']] = ['sum of performance break >={}'.format(break_threshold),
+                                                               round(df_break[df_break['diff']>=break_threshold].loc[:,'diff'].sum(),2)
+                                                               ]
+    df_temp.loc[len(df_temp.index), ['Z_NetAmount','diff']] = ['sum of performance break'.format(break_threshold),
+                                                               round(df_break.loc[:,'diff'].sum(),2)
                                                                ]
     df_temp.to_csv(output_path+'BREAK_sea_{}.csv'.format(broker.lower()), index=False)
     return
