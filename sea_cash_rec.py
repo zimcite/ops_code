@@ -1,7 +1,6 @@
 import os
 import datetime
 import pandas as pd
-from llvm.passes import PASSES
 from pandas.tseries.offsets import BDay
 import sys
 
@@ -109,6 +108,18 @@ def get_swap_activity_report_path(broker, date, ops_param, verbose=True):
     else:
         if verbose:
             logger.warning('Cannot find {} report for {} in {}'.format(includes[0],broker,filepath))
+        return
+    
+def get_ubs_cash_activity_report_path(date, ops_param, verbose=True):
+    filepath = ops_param['workflow_path'] + r'Archive\{}\{}'.format(date.strftime('%Y%m%d'), 'UBS')
+    includes = ['PRTCashActivityStmt-SDperiodiccash.GRPZENTI']
+    excludes = []
+    file = ou.filter_files(filepath, includes, excludes)
+    if file is not None:
+        return os.path.join(filepath, file)
+    else:
+        if verbose:
+            logger.warning('Cannot find {} report for {} in {}'.format(includes[0], broker, filepath))
         return
 
 def load_broker_swap_settlement_cashflow(broker, date, ops_param, column_header, trade_dates):
@@ -269,7 +280,8 @@ def load_broker_settled_cash_div(broker, date, ops_param, column_header):
             if df.empty:
                 logger.warning('There is no {} cash dividend settled on {} as sourced from {}'.format(broker, date, filepath))
 
-    elif broker == 'UBS':
+    elif broker == 'UBS':v
+        filepath = get_ubs_cash_activity_report_path(date, ops_param)
         
         pass
     
