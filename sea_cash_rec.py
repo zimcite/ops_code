@@ -280,7 +280,7 @@ def load_broker_settled_cash_div(broker, date, ops_param, column_header):
             if df.empty:
                 logger.warning('There is no {} cash dividend settled on {} as sourced from {}'.format(broker, date, filepath))
 
-    elif broker == 'UBS':v
+    elif broker == 'UBS':
         filepath = get_ubs_cash_activity_report_path(date, ops_param)
         
         pass
