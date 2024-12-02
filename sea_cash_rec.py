@@ -119,7 +119,7 @@ def get_ubs_cash_activity_report_path(date, ops_param, verbose=True):
         return os.path.join(filepath, file)
     else:
         if verbose:
-            logger.warning('Cannot find {} report for {} in {}'.format(includes[0], broker, filepath))
+            logger.warning('Cannot find {} report for {} in {}'.format(includes[0], 'UBS', filepath))
         return
 
 def load_broker_swap_settlement_cashflow(broker, date, ops_param, column_header, trade_dates):
@@ -247,11 +247,11 @@ def load_zen_settled_cash_div(broker, date, ops_param):
         logger.warning('There is no ZEN cash dividend settled on  {} for broker {}'.format(date, broker))
     return df
     
-    pass
 def load_broker_settled_cash_div(broker, date, ops_param, column_header):
     '''
     GS: found settled cash dividend in daily activity report on settle date
     BOAML: found settled cash dividend in settled report on t-2
+    UBS: found cash activitiy SD report on settle date
     '''
     if broker == 'GS':
         df = pd.DataFrame(columns = column_header)
@@ -268,9 +268,9 @@ def load_broker_settled_cash_div(broker, date, ops_param, column_header):
         if filepath is not None:
             # manually downladed file is in .xlsx, but ftp downloaded file is in .csv
             try:
-                df_temp = pd.read_excel(filepath, skiprows=[0, 2])
+                df = pd.read_excel(filepath, skiprows=[0, 2])
             except:
-                df_temp = pd.read_csv(filepath, skiprows=[0, 2])
+                df = pd.read_csv(filepath, skiprows=[0, 2])
             else:
                 logger.error('Failed to read in {}'.format(filepath))
                 raise
@@ -281,10 +281,17 @@ def load_broker_settled_cash_div(broker, date, ops_param, column_header):
                 logger.warning('There is no {} cash dividend settled on {} as sourced from {}'.format(broker, date, filepath))
 
     elif broker == 'UBS':
+        column_header_tmp = ['Account Name', 'Settle CCY', 'Entry Date', 'Trade Date', 'Settle Date', 'Account ID', 'Trans Type', 'Cashflow Type', 'Transaction Comments', 'Cancel', 'Security Description', 'UBS Ref', 'Exec Broker', 'Net Amount']
+        df = pd.DataFrame(columns=column_header_tmp)
         filepath = get_ubs_cash_activity_report_path(date, ops_param)
-        
-        
-        pass
+        if filepath is not None:
+            df = pd.read_csv(filepath)
+            df['Account Name'] = df['Account Name'].ffill()
+            df = df[df['Account Name']=='BLUEHARBOUR MAP I LP-ZENTIFIC']
+            df = df[(df['Cashflow Type']=='Dividend') & (df['Trans Type']=='Posting') & (df['Cancel'].isnull())]
+            df['Sedol'] = df['Transaction Comments'].str.extract('SEDOL ([A-Z0-9]{6})')
+            if df.empty:
+                logger.warning('There is no {} cash dividend settled on {} as sourced from {}'.format(broker, date, filepath))
     
     elif broker == 'JPM':
         pass
@@ -346,9 +353,17 @@ def reconcile_broker_settled_cash_dividend(broker, date, ops_param, column_heade
                            bb_code_col_name='Underlying Primary Bloomberg Code',
                            net_amount_col_name='Total Pay CCY'
                            )
-        input(df_break)
     elif broker == 'UBS':
-        pass
+        df_break = _helper(
+            df_zen=df_zen,
+            df_broker=(df_broker
+                       .merge(ticker_map[['sedol','bb_code']], left_on='Sedol', right_on='sedol', how='left')
+                       ),
+            broker=broker,
+            bb_code_col_name='bb_code',
+            net_amount_col_name='Net Amount'
+            )
+        input(df_break)
     
     pass
 
@@ -522,9 +537,9 @@ def main(argv):
         broker = argv[1]
 
     #break threshold is usd10
-    reconcile_broker_swap_settlement_cashflow(broker, date, ops_param, column_headers[broker])
+    #reconcile_broker_swap_settlement_cashflow(broker, date, ops_param, column_headers[broker])
     
-    #reconcile_broker_settled_cash_dividend(broker, date, ops_param,column_headers[broker])
+    reconcile_broker_settled_cash_dividend(broker, date, ops_param,column_headers[broker])
 
 
 if (__name__ == '__main__') :
