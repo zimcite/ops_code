@@ -1402,6 +1402,10 @@ class Logger:
         if log_file is not None:
             open(log_file, 'w').close()
 
+    def clear_log(self):
+        if self.log_file is not None:
+            open(self.log_file, 'w').close()
+
     def _log(self, level_name, message):
         level_value = self.LOG_LEVELS[level_name]
         timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
