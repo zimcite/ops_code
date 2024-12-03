@@ -4,6 +4,7 @@ except:
     raise Exception(
         'Install pyodbc from: s:\installers\pyodbc-3.0.7.win-amd64-py3.4.exe')
 import pandas as pd
+import re
 import numpy as np
 import csv
 import random
@@ -1406,9 +1407,20 @@ class Logger:
         if self.log_file is not None:
             open(self.log_file, 'w').close()
 
-    def _log(self, level_name, message):
+    def _log(self, level_name, message, to_format):
         level_value = self.LOG_LEVELS[level_name]
         timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+        if to_format:
+            # Convert datetime patterns in message to YYYY-MM-DD
+            pattern = r'\d{4}-\d{2}-\d{2} 00:00:00'
+            message = re.sub(pattern, lambda x: x.group(0)[:10], message)
+
+            try:
+                message = message.replace('//zimnashk/sd.zentific-im.com$', 'S:/')
+            except:
+                pass
+
         msg = "{} - {} - {}".format(timestamp,level_name,message)
         print(msg, flush=True)
 
@@ -1417,19 +1429,19 @@ class Logger:
                 f.write(msg + '\n')
 
     def debug(self, message):
-        self._log('DEBUG', message)
+        self._log('DEBUG', message, to_format=True)
 
     def info(self, message):
-        self._log('INFO', message)
+        self._log('INFO', message, to_format=True)
 
     def warning(self, message):
-        self._log('WARNING', message)
+        self._log('WARNING', message, to_format=True)
 
     def error(self, message):
-        self._log('ERROR', message)
+        self._log('ERROR', message, to_format=True)
 
     def critical(self, message):
-        self._log('CRITICAL', message)
+        self._log('CRITICAL', message, to_format=True)
 
 
 def filter_files(filepath, includes=[], excludes=[]):
@@ -1440,6 +1452,8 @@ def filter_files(filepath, includes=[], excludes=[]):
     files = [x for x in os.listdir(filepath)
             if all(i in x for i in includes)
             and not any(e in x for e in excludes)]
+    if not files:
+        return
     files.sort(key=lambda x: os.path.getmtime(os.path.join(filepath, x)), reverse=True)
     newest_time = os.path.getmtime(os.path.join(filepath, files[0]))
     newest_files = [f for f in files if os.path.getmtime(os.path.join(filepath, f)) == newest_time]
