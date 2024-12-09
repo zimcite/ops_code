@@ -204,7 +204,7 @@ def load_broker_swap_settlement_cashflow(broker, date, ops_param, column_header,
 							raise
 					df_temp.columns = column_header
 					df_temp = df_temp[df_temp['Payment Date'] == date]
-					df_temp = df_temp[df_temp['Reset Record Code'] == 'REQY']
+					#df_temp = df_temp[df_temp['Reset Record Code'] == 'REQY']
 					if df_temp.empty:
 						logger.warning('There is no {} swap unwind cashflow on settle date = {} as sourced from {}'.format(broker,date,filepath))
 				else:
@@ -225,6 +225,7 @@ def load_broker_swap_settlement_cashflow(broker, date, ops_param, column_header,
 					df_temp = df_temp[df_temp['Settle Date'] == date.strftime('%m/%d/%Y')]
 					if df_temp.empty:
 						logger.warning('There is no {} swap unwind cashflow on settle date = {} as sourced from {}'.format(broker, date,filepath))
+						df_temp = pd.DataFrame(columns=column_header)
 					else:
 						# merge with swap activity report on UBS ref to get trade_date
 						filepath2 = get_ubs_swap_activity_report_path(trade_date, ops_param)
@@ -235,6 +236,7 @@ def load_broker_swap_settlement_cashflow(broker, date, ops_param, column_header,
 					df_temp = pd.DataFrame(columns=column_header)
 				dfs.append(df_temp)
 			df = ou.merge_df_list(dfs, 'v')
+			df = df[column_header]
 
 		else:
 			df = pd.DataFrame(columns=column_header)
@@ -249,6 +251,7 @@ def load_broker_swap_settlement_cashflow(broker, date, ops_param, column_header,
 				df = df[df['Level'] == 'Trade']
 				df = df[df['Event'] == 'Unwind']
 				df = df[df['Swap Pay Date'] == date.strftime('%Y-%m-%d')]
+				df = df[df['Settlement Status'] == 'SETTLED']
 				if df.empty:
 					logger.warning('There is no {} swap unwind cashflow on settle date = {} as sourced from {}'.format(broker,date,filepath))
 				break
@@ -277,8 +280,8 @@ def load_broker_swap_settlement_cashflow(broker, date, ops_param, column_header,
 def load_zen_settled_cash_div(broker, date, ops_param):
 	sql = """SELECT bb_code,
 		prime,
-		date AS [ex_date],
-		date_settle AS [settle_date],
+		date_trade_entry,
+		date_settle,
 		cash_local
 		FROM zimdb_ops..{}
 		WHERE event = 'cash dividend'
@@ -318,7 +321,7 @@ def load_broker_settled_cash_div(broker, date, ops_param, column_header):
 			df = df[(df['Activity'].str.contains('DIVIDEND')) & (df['Currency'] == 'U S DOLLAR') & (df['SettleDate']==(date-BDay(1)).strftime('%m/%d/%y'))]
 			df['Sedol'] = df['BrokerDescription'].str[-7:-1]
 			if df.empty:
-				logger.warning('There is no {} cash dividend settled on {} as sourced from {}'.format(broker, date, filepath))
+				logger.warning('There is no {} cash dividend settled on {} as sourced from {}'.format(broker, date-BDay(1), filepath))
 
 	elif broker == 'BOAML':
 		df = pd.DataFrame(columns=column_header)
@@ -326,10 +329,10 @@ def load_broker_settled_cash_div(broker, date, ops_param, column_header):
 		if filepath is not None:
 			# manually downladed file is in .xlsx, but ftp downloaded file is in .csv
 			try:
-				df_temp = pd.read_excel(filepath, skiprows=[0, 2])
+				df = pd.read_excel(filepath, skiprows=[0, 2])
 			except:
 				try:
-					df_temp = pd.read_csv(filepath, skiprows=[0, 2])
+					df = pd.read_csv(filepath, skiprows=[0, 2])
 				except:
 					logger.error('Failed to read {}'.format(filepath))
 					raise
@@ -385,40 +388,82 @@ def load_broker_settled_cash_div(broker, date, ops_param, column_header):
 	return df
 
 
-def reconcile_broker_settled_cash_dividend(broker, date, ops_param, column_header, break_threshold=10):
-	def _helper(df_zen, df_broker, broker, bb_code_col_name, net_amount_col_name):
-		perf_dict1 = df_zen.groupby('bb_code')['cash_local'].sum().to_dict()
-		perf_dict2 = df_broker.groupby(bb_code_col_name)[net_amount_col_name].sum().to_dict()
+def reconcile_broker_settled_cash_dividend(broker, date, ops_param, column_header, break_threshold):
+	def _helper(df_zen, df_broker, broker, bb_code_col_name, settle_date_col_name, net_amount_col_name):
+		df_broker[settle_date_col_name] = pd.to_datetime(df_broker[settle_date_col_name]).apply(lambda x: x.date())
+		perf_dict1 = df_zen.groupby(['bb_code', 'date_settle'])['cash_local'].sum().to_dict()
+		perf_dict2 = df_broker.groupby([bb_code_col_name, settle_date_col_name])[net_amount_col_name].sum().to_dict()
 
-		all_bb_codes = set(perf_dict1) | set(perf_dict2)
+		all_combinations  = set(perf_dict1) | set(perf_dict2)
 		result = []
-		for bb in all_bb_codes:
-			p1 = perf_dict1.get(bb)
-			p2 = float(perf_dict2.get(bb)) if perf_dict2.get(bb) is not None else None
+		for bb, settle_date in all_combinations:
+			p1 = perf_dict1.get((bb, settle_date))
+			p2 = float(perf_dict2.get((bb, settle_date))) if perf_dict2.get((bb, settle_date)) is not None else None
 			if p1 is None:
-				flag = 'div break - Zen missing'
+				flag = 'break - Zen missing'
 			elif p2 is None:
-				flag = 'div break - {} missing'.format(broker)
+				flag = 'break - {} missing'.format(broker)
 			elif abs(p1 - p2) > break_threshold:
-				flag = 'div break - diff > {}'.format(break_threshold)
+				flag = 'break - diff > {}'.format(break_threshold)
 			else:
 				flag = ''
+
+			# determine ex_date from zimdb
+			ex_dates = df_zen.loc[(df_zen['date_settle'] == settle_date) & (df_zen['bb_code'] == bb)]
+			if len(ex_dates) > 0:
+				ex_date = pd.to_datetime(ex_dates['date_trade_entry'].iloc[0]).date()  # specify the column 'date'
+			else:
+				ex_date = ''
+
 			result.append(
 				{
 					'break': flag,
 					'bb_code': bb,
-					'trade_date': '',
-					'settle_date': '',
+					'trade_date':ex_date,
+					'settle_date':settle_date,
 					'{}_NetAmount'.format(broker): p2,
 					'Z_NetAmount': p1,
-					'diff': p1 - p2 if p1 is not None and p2 is not None else None,
+					'diff': (p2 or 0) - (p1 or 0),
 				}
 			)
-		columns_to_keep = ['break', 'bb_code', '{}_NetAmount'.format(broker), 'Z_NetAmount', 'diff']
+		columns_to_keep = ['break', 'trade_date','settle_date','bb_code', '{}_NetAmount'.format(broker), 'Z_NetAmount', 'diff']
 		result_df = pd.DataFrame(columns=columns_to_keep)
 		if result:
 			result_df = pd.DataFrame(result)[columns_to_keep]
 		return result_df
+	# def _helper(df_zen, df_broker, broker, bb_code_col_name, settle_date_col_name, net_amount_col_name):
+	# 	perf_dict1 = df_zen.groupby('bb_code')['cash_local'].sum().to_dict()
+	# 	perf_dict2 = df_broker.groupby(bb_code_col_name)[net_amount_col_name].sum().to_dict()
+	#
+	# 	all_bb_codes = set(perf_dict1) | set(perf_dict2)
+	# 	result = []
+	# 	for bb in all_bb_codes:
+	# 		p1 = perf_dict1.get(bb)
+	# 		p2 = float(perf_dict2.get(bb)) if perf_dict2.get(bb) is not None else None
+	# 		if p1 is None:
+	# 			flag = 'div break - Zen missing'
+	# 		elif p2 is None:
+	# 			flag = 'div break - {} missing'.format(broker)
+	# 		elif abs(p1 - p2) > break_threshold:
+	# 			flag = 'div break - diff > {}'.format(break_threshold)
+	# 		else:
+	# 			flag = ''
+	# 		result.append(
+	# 			{
+	# 				'break': flag,
+	# 				'bb_code': bb,
+	# 				'trade_date': '',
+	# 				'settle_date': '',
+	# 				'{}_NetAmount'.format(broker): p2,
+	# 				'Z_NetAmount': p1,
+	# 				'diff': (p2 or 0) - (p1 or 0),
+	# 			}
+	# 		)
+	# 	columns_to_keep = ['break', 'bb_code', '{}_NetAmount'.format(broker), 'Z_NetAmount', 'diff']
+	# 	result_df = pd.DataFrame(columns=columns_to_keep)
+	# 	if result:
+	# 		result_df = pd.DataFrame(result)[columns_to_keep]
+	# 	return result_df
 
 	logger.clear_log()
 	df_broker = load_broker_settled_cash_div(broker, date, ops_param, column_header)
@@ -431,6 +476,7 @@ def reconcile_broker_settled_cash_dividend(broker, date, ops_param, column_heade
 				.merge(ticker_map[['sedol', 'bb_code']], left_on='Sedol', right_on='sedol', how='left')
 			),
 			broker=broker,
+			settle_date_col_name='SettleDate',
 			bb_code_col_name='bb_code',
 			net_amount_col_name='NetAmount'
 		)
@@ -440,6 +486,7 @@ def reconcile_broker_settled_cash_dividend(broker, date, ops_param, column_heade
 			df_zen=df_zen,
 			df_broker=df_broker,
 			broker=broker,
+			settle_date_col_name='Payment Date',
 			bb_code_col_name='Underlying Primary Bloomberg Code',
 			net_amount_col_name='Total Pay CCY'
 		)
@@ -451,6 +498,7 @@ def reconcile_broker_settled_cash_dividend(broker, date, ops_param, column_heade
 					   .merge(ticker_map[['sedol', 'bb_code']], left_on='Sedol', right_on='sedol', how='left')
 					   ),
 			broker=broker,
+			settle_date_col_name='Settle Date',
 			bb_code_col_name='bb_code',
 			net_amount_col_name='Net Amount'
 		)
@@ -463,6 +511,7 @@ def reconcile_broker_settled_cash_dividend(broker, date, ops_param, column_heade
 				df_zen=df_zen,
 				df_broker=df_broker[df_broker['Swap Pay Date'] == settle_date],
 				broker=broker,
+				settle_date_col_name='Swap Pay Date',
 				bb_code_col_name='Bloomberg Code',
 				net_amount_col_name='Net Amount (Pay Currency)'
 			)
@@ -478,6 +527,7 @@ def reconcile_broker_settled_cash_dividend(broker, date, ops_param, column_heade
 				df_zen=df_zen,
 				df_broker=df_broker[df_broker['Valuation Date'] == settle_date],
 				broker=broker,
+				settle_date_col_name='Payment Date',
 				bb_code_col_name='Bloomberg ID',
 				net_amount_col_name='Amount'
 			)
@@ -499,7 +549,7 @@ def reconcile_broker_settled_cash_dividend(broker, date, ops_param, column_heade
 
 	return
 
-def reconcile_broker_swap_settlement_cashflow(broker, date, ops_param, column_header, break_threshold=10):
+def reconcile_broker_swap_settlement_cashflow(broker, date, ops_param, column_header, break_threshold):
 	def _helper(df_zen, df_broker, broker, bb_code_col_name, trade_date_col_name, performance_col_name):
 		df_broker[trade_date_col_name] = pd.to_datetime(df_broker[trade_date_col_name]).apply(lambda x: x.date())
 		perf_dict1 = (df_zen.groupby(['bb_code', 'date'])['accrued_fin'].sum() +
@@ -527,7 +577,7 @@ def reconcile_broker_swap_settlement_cashflow(broker, date, ops_param, column_he
 					'settle_date':pd.to_datetime(date).date(),
 					'{}_NetAmount'.format(broker): p2,
 					'Z_NetAmount': p1,
-					'diff': p1 - p2 if p1 is not None and p2 is not None else None,
+					'diff': (p2 or 0) - (p1 or 0),
 				}
 			)
 		columns_to_keep = ['break', 'trade_date','settle_date','bb_code', '{}_NetAmount'.format(broker), 'Z_NetAmount', 'diff']
@@ -553,14 +603,14 @@ def reconcile_broker_swap_settlement_cashflow(broker, date, ops_param, column_he
 		)
 		# to align df_broker with legacy V2 file
 		df_broker.rename(columns={'Net Amount (Settle CCY)': 'GS_NetAmount'}, inplace=True)
-		df_broker.insert(33, 'bb_code', ticker_map.set_index('ric', drop=True).loc[df_broker['Underlyer RIC'], 'bb_code'])
+		df_broker.insert(33, 'bb_code', df_broker['Underlyer RIC'].to_frame().merge(ticker_map[['ric', 'bb_code']], left_on='Underlyer RIC', right_on='ric', how='left')['bb_code'])
 
 	elif broker == 'BOAML':
 		# if df_broker.empty:
 		#     df_broker['Underlyer RIC'] = None
 		df_break = _helper(
 			df_zen=df_zen,
-			df_broker=df_broker,
+			df_broker=df_broker[df_broker['Reset Record Code'] == 'REQY'].copy(),
 			broker=broker,
 			trade_date_col_name='Swap Reset Date',
 			bb_code_col_name='Underlying Primary Bloomberg Code',
@@ -592,7 +642,7 @@ def reconcile_broker_swap_settlement_cashflow(broker, date, ops_param, column_he
 		)
 		# to align df_broker with legacy V2 file
 		df_broker.rename(columns={'Net PnL': 'UBS_NetAmount'}, inplace=True)
-		df_broker.insert(21, 'bb_code', ticker_map.set_index('ric', drop=True).loc[df_broker['RIC'], 'bb_code'].values)
+		df_broker.insert(22, 'bb_code', ticker_map.set_index('ric', drop=True).loc[df_broker['RIC'], 'bb_code'].values)
 
 	elif broker == 'JPM':
 		df_break = _helper(
@@ -620,7 +670,8 @@ def reconcile_broker_swap_settlement_cashflow(broker, date, ops_param, column_he
 		# to align df_broker with legacy V2 file
 		df_broker.columns = [col.replace('-', '').replace(' ', '') for col in df_broker.columns]
 		df_broker.rename(columns={'Amount': 'MS_NetAmount'}, inplace=True)
-		df_broker.insert(53, 'MS_Total', df_broker['MS_NetAmount'] + df_broker['FinancingAmount'])
+		df_broker = df_broker.iloc[:,:50] #get rid of 3 useless cols
+		df_broker.insert(50, 'MS_Total', df_broker['MS_NetAmount'] + df_broker['FinancingAmount'])
 
 	# to align df_zen with legacy V2 file
 	df_zen.insert(18, 'pre_NetAmount', -(df_zen['accrued_fin'] + df_zen['cash_local']))
@@ -634,6 +685,9 @@ def reconcile_broker_swap_settlement_cashflow(broker, date, ops_param, column_he
 	df_zen.to_csv(output_path + 'z_sea_{}_tmp.csv'.format(broker.lower()), index=False)
 	df_broker.to_csv(output_path + '{b}_sea_{b}_tmp.csv'.format(b=broker.lower()), index=False)
 	df_break.to_csv(output_path + 'BREAK_sea_{}.csv'.format(broker.lower()), index=False)
+
+	# output another df_break for the balance reading
+	df_break[df_break.columns[1:].tolist() + [df_break.columns[0]]].to_csv(output_path + 'BREAK_sea_{}_for_balance.csv'.format(broker.lower()), index=False)
 
 	# add log to break file (legacy compatibile)
 	merge_txt_to_csv(output_path + 'BREAK_sea_{}.csv'.format(broker.lower()), log_file, 'break')
@@ -682,10 +736,13 @@ def main(argv):
 		broker = argv[1]
 
 	# break threshold is usd10 for both
-	logger.info('Doing unwind cfd performance rec for {} on settle_date = {}'.format(broker, date))
-	reconcile_broker_swap_settlement_cashflow(broker, date, ops_param, column_headers[broker])
-	logger.info('Doing cash dividend rec for {} on settle_date = {}'.format(broker, date))
-	reconcile_broker_settled_cash_dividend(broker, date, ops_param, column_headers[broker])
+	print('--------------------------------------------------------------------------------------------', flush=True)
+	print('Doing unwind cfd performance rec for {} on settle_date = {}'.format(broker, date.strftime('%Y-%m-%d')),flush=True)
+	reconcile_broker_swap_settlement_cashflow(broker, date, ops_param, column_headers[broker],break_threshold=10)
+
+	print('--------------------------------------------------------------------------------------------', flush=True)
+	print('Doing cash dividend rec for {} on settle_date = {}'.format(broker, date.strftime('%Y-%m-%d')),flush=True)
+	reconcile_broker_settled_cash_dividend(broker, date, ops_param, column_headers[broker],break_threshold=10)
 
 
 if (__name__ == '__main__'):
