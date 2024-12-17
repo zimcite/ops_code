@@ -9,11 +9,14 @@ output_path = r'S:\Operations\Workflow\tradefillsmacro\cash_rec\cash_tmp\\'
 log_file = os.path.join(output_path, 'logs.txt')
 import ops_utils as ou
 
+to_date = lambda x: x.date()
 
 def merge_txt_to_csv(csv_path, txt_path, column_name):
 	df = pd.read_csv(csv_path)
 	original_columns = df.columns  # Store original column order
 	new_rows = []
+
+	new_rows.append({col: '-----logs-----' if col == 'break' else '' for col in original_columns})
 
 	with open(txt_path, 'r', encoding='utf-8') as file:
 		for line in file:
@@ -28,25 +31,42 @@ def merge_txt_to_csv(csv_path, txt_path, column_name):
 	df.to_csv(csv_path, index=False)
 	return
 
+def is_month_end(d):
+	"""d is datetime.date object"""
+	next_day = d + datetime.timedelta(days=1)
+	return d.month != next_day.month
+
+def get_previous_month(d):
+	"""d is datetime.date object"""
+	MS_date = datetime.date(d.year, d.month, 1)
+	last_ME_date = MS_date - datetime.timedelta(days=1)
+	return last_ME_date.strftime("%b %y")
+
+def get_past_bdays(d, num=5):
+	"""d is datetime.date object"""
+	date_set = set()
+	for i in range(1, num+1):
+		date_set.add(to_date(d-BDay(i)))
+	return date_set
 
 ticker_map = ou.exec_sql(
 	"""SELECT
-								CASE
-									WHEN bb_code_traded LIKE '%Equity' THEN SUBSTRING(bb_code_traded, 1, CHARINDEX(
-									'Equity',bb_code_traded)-2 )
-									ELSE bb_code_traded
-								END AS bb_code,
-								sedol_traded AS sedol,
-								isin,
-								CASE
-									WHEN bb_code_traded LIKE '%/F TB%' AND CHARINDEX('.BK',ric) > 0
-										THEN SUBSTRING(ric, 1, CHARINDEX('.BK',ric)-1) + '_f.BK'
-									WHEN bb_code_traded LIKE '%-R TB%' AND CHARINDEX('.BK',ric) > 0
-										THEN SUBSTRING(ric, 1, CHARINDEX('.BK',ric)-1) + '_n.BK'
-									ELSE ric
-								END AS ric
-								FROM zimdb..trade_ticker_map
-								"""
+		CASE
+			WHEN bb_code_traded LIKE '%Equity' THEN SUBSTRING(bb_code_traded, 1, CHARINDEX(
+			'Equity',bb_code_traded)-2 )
+			ELSE bb_code_traded
+		END AS bb_code,
+		sedol_traded AS sedol,
+		isin,
+		CASE
+			WHEN bb_code_traded LIKE '%/F TB%' AND CHARINDEX('.BK',ric) > 0
+				THEN SUBSTRING(ric, 1, CHARINDEX('.BK',ric)-1) + '_f.BK'
+			WHEN bb_code_traded LIKE '%-R TB%' AND CHARINDEX('.BK',ric) > 0
+				THEN SUBSTRING(ric, 1, CHARINDEX('.BK',ric)-1) + '_n.BK'
+			ELSE ric
+		END AS ric
+		FROM zimdb..trade_ticker_map
+	"""
 )
 
 
@@ -140,141 +160,149 @@ def get_ubs_swap_activity_report_path(date,ops_param, verbose=True):
 			logger.warning('Cannot find {} report for {} in {}'.format(includes[0], 'UBS', filepath))
 		return
 
-
-# def get_gs_custody_trade_date_report_path(date, ops_param, verbose=True):
-# 	filepath = ops_param['workflow_path'] + r'Archive\{}\{}'.format(date.strftime('%Y%m%d'), 'GS')
-# 	includes = ['Custody_Trade_Da']
-# 	excludes = ['AP', 'APE']
-# 	file = ou.filter_files(filepath, includes, excludes)
-# 	if file is not None:
-# 		return os.path.join(filepath, file)
-# 	else:
-# 		if verbose:
-# 			logger.warning('Cannot find {} report for {} in {}'.format(includes[0], 'GS', filepath))
-# 		return
-
-
 def load_broker_swap_settlement_cashflow(broker, date, ops_param, column_header, trade_dates):
 	'''
-	GS: unwind financing paid at ME along with reset financing
-	BOAML: unwind financing paid when unwind
-	UBS: unwind financing paid after ME along with reset financing
-	JPM: unwind financing paid when unwind
-	MS: unwind financing paid when unwind
+	# +--------+--------------------+------------------+---------------+-----------------------------------------+
+	# | Broker | Unwind Financing   | Reset Financing  | Cash Interest | Source of reset
+	# +--------+--------------------+------------------+---------------+-----------------------------------------+
+	# | GS     | Paid at ME         | Paid at ME       | Paid at ME    | ME date cfd daily activity report
+	# | BOAML  | Paid when unwind   | Paid after ME    | Paid at ME    | ME/ME+1 date lawrence (sd ME+2/ME+3) - same behaviour as swap unwind performance
+	# | UBS    | Paid after ME      | Paid after ME    | Paid after ME | ME+1 date cash activity report (sd ME+1)
+	# | JPM    | Paid when unwind   | Paid after ME    | Paid after ME | ME date settlement report
+	# | MS     | Paid when unwind   | Paid after ME    | Paid after ME | ME/ME+1 date 24MX - same behaviour as swap unwind performance
+	# +--------+--------------------+------------------+---------------+-----------------------------------------+
 
-	date is T0
+	Return the broker unwind cashflow with settle date = date(T0) with all natures
+	It will be T-1 in V2
+	Note that report in corresponding folder shouldn't span across multiple days
+
 	GS/BOAML/UBS:
-		- retrieve trade date from zen cash tickets
+		- retrieve trade date from zen cash tickets/interset with 5 bday before the date
 		- loop through trade date activity report to load unwind performance cashflow
 	JPM/MS:
-		- first try T0 settlement report
-		- if not found, goes back to T-1 settlement report
+		-  T-1 settlement report
 	'''
+	reset_interest_sum = 0
 	if broker == 'GS':
-		if len(trade_dates) > 0:
-			dfs = []
-			for trade_date in trade_dates:
-				filepath = get_swap_activity_report_path(broker, trade_date, ops_param)
-				if filepath is not None:
-					df_temp = pd.read_excel(filepath, skiprows=7)
-					df_temp.columns = column_header
-					df_temp = df_temp[df_temp['Open/Close'] == 'Close']
-					if df_temp.empty:
-						logger.warning('There is no {} swap unwind cashflow on settle date = {} as sourced from {}'.format(broker,date,filepath))
-				else:
-					df_temp = pd.DataFrame(columns=column_header)
-				dfs.append(df_temp)
-			df = ou.merge_df_list(dfs, 'v')
-		else:
-			df = pd.DataFrame(columns=column_header)
+		#unwind cfd sett
+		dfs = []
+		for trade_date in sorted(trade_dates | get_past_bdays(date)):
+			filepath = get_swap_activity_report_path(broker, trade_date, ops_param)
+			if filepath is not None:
+				df_temp = pd.read_excel(filepath, skiprows=7)
+				df_temp.columns = column_header
+				df_temp = df_temp[df_temp['Open/Close'] == 'Close']
+				df_temp = df_temp[df_temp['Settle Date'] == date.strftime('%d %b %Y')]
+				if df_temp.empty:
+					logger.warning('There is no {} swap unwind cashflow on settle date = {} as sourced from {}'.format(broker,date,filepath))
+			else:
+				df_temp = pd.DataFrame(columns=column_header)
+			dfs.append(df_temp)
+		df = ou.merge_df_list(dfs, 'v')
+
+		#ME cfd interest
+		if is_month_end(to_date(date-BDay(1))):
+			filepath = get_swap_activity_report_path(broker, to_date(date-BDay(1)), ops_param)
+			df_reset = pd.read_excel(filepath, skiprows=7)
+			df_reset.columns = column_header
+			df_reset = df_reset[df_reset['Event'] == 'Financing Payment']
+			df_reset = df_reset[df_reset['Settle Date'] == to_date(date-BDay(1)).strftime('%d %b %Y')]
+			reset_interest_sum = df_reset['Net Amount (Settle CCY)'].sum()
+			if reset_interest_sum:
+				print('Calculating cfd interest...', flush=True)
+				df = pd.concat([df_reset, df], axis=0)
+
 	elif broker == 'BOAML':
-		if len(trade_dates) > 0:
-			dfs = []
-			for trade_date in trade_dates:
-				filepath = get_swap_settlement_report_path(broker, trade_date, ops_param)
-				if filepath is not None:
-					# manually downladed file is in .xlsx, but ftp downloaded file is in .csv
+		dfs = []
+		for trade_date in sorted(trade_dates | get_past_bdays(date)):
+			filepath = get_swap_settlement_report_path(broker, trade_date, ops_param)
+			if filepath is not None:
+				# manually downladed file is in .xlsx, but ftp downloaded file is in .csv
+				try:
+					df_temp = pd.read_excel(filepath, skiprows=[0, 2])
+				except:
 					try:
-						df_temp = pd.read_excel(filepath, skiprows=[0, 2])
+						df_temp = pd.read_csv(filepath, skiprows=[0, 2])
 					except:
-						try:
-							df_temp = pd.read_csv(filepath, skiprows=[0, 2])
-						except:
-							logger.error('Failed to read {}'.format(filepath))
-							raise
-					df_temp.columns = column_header
-					df_temp = df_temp[df_temp['Payment Date'] == date]
-					#df_temp = df_temp[df_temp['Reset Record Code'] == 'REQY']
-					if df_temp.empty:
-						logger.warning('There is no {} swap unwind cashflow on settle date = {} as sourced from {}'.format(broker,date,filepath))
-				else:
-					df_temp = pd.DataFrame(columns=column_header)
-				dfs.append(df_temp)
-			df = ou.merge_df_list(dfs, 'v')
+						logger.error('Failed to read {}'.format(filepath))
+						raise
+				df_temp.columns = column_header
+				df_temp = df_temp[df_temp['Payment Date'] == date]
+				if df_temp.empty:
+					logger.warning('There is no {} swap unwind cashflow on settle date = {} as sourced from {}'.format(broker,date,filepath))
+			else:
+				df_temp = pd.DataFrame(columns=column_header)
+			dfs.append(df_temp)
+		df = ou.merge_df_list(dfs, 'v')
 
-		else:
-			df = pd.DataFrame(columns=column_header)
+		#calculate reset financing if any
+		df_reset = df[(df['Action'] == 'Reset') & (df['Reset Record Code'] == 'RFIN')]
+		if not df_reset.empty:
+			print('Calculating cfd interest...', flush=True)
+			reset_interest_sum = df_reset['Total Pay CCY'].sum()
+
 	elif broker == 'UBS':
-		if len(trade_dates) > 0:
-			dfs = []
-			for trade_date in trade_dates:
-				filepath = get_swap_settlement_report_path(broker, trade_date, ops_param)
-				if filepath is not None:
-					df_temp = pd.read_csv(filepath)
-					df_temp = df_temp[df_temp['Account Name'] == 'BLUEHARBOUR MAP I LP-ZENTIFIC']
-					df_temp = df_temp[df_temp['Settle Date'] == date.strftime('%m/%d/%Y')]
-					if df_temp.empty:
-						logger.warning('There is no {} swap unwind cashflow on settle date = {} as sourced from {}'.format(broker, date,filepath))
-						df_temp = pd.DataFrame(columns=column_header)
-					else:
-						# merge with swap activity report on UBS ref to get trade_date
-						filepath2 = get_ubs_swap_activity_report_path(trade_date, ops_param)
-						if filepath2 is not None:
-							df_temp2 = pd.read_csv(filepath2)
-							df_temp = df_temp.merge(df_temp2[['Trade Date','UBS Ref']],left_on='Close Trade', right_on='UBS Ref', how='left')
-				else:
-					df_temp = pd.DataFrame(columns=column_header)
-				dfs.append(df_temp)
-			df = ou.merge_df_list(dfs, 'v')
-			df = df[column_header]
 
-		else:
-			df = pd.DataFrame(columns=column_header)
+		dfs = []
+		for trade_date in sorted(trade_dates | get_past_bdays(date)):
+			filepath = get_swap_settlement_report_path(broker, trade_date, ops_param)
+			if filepath is not None:
+				df_temp = pd.read_csv(filepath)
+				df_temp = df_temp[df_temp['Account Name'] == 'BLUEHARBOUR MAP I LP-ZENTIFIC']
+				df_temp = df_temp[df_temp['Settle Date'] == date.strftime('%m/%d/%Y')]
+				if df_temp.empty:
+					logger.warning('There is no {} swap unwind cashflow on settle date = {} as sourced from {}'.format(broker, date,filepath))
+					df_temp = pd.DataFrame(columns=column_header)
+				else:
+					# merge with swap activity report on UBS ref to get trade_date
+					filepath2 = get_ubs_swap_activity_report_path(trade_date, ops_param)
+					if filepath2 is not None:
+						df_temp2 = pd.read_csv(filepath2)
+						df_temp = df_temp.merge(df_temp2[['Trade Date','UBS Ref']],left_on='Close Trade', right_on='UBS Ref', how='left')
+						df_temp = df_temp[df_temp['Trade Date'].notnull()]
+			else:
+				df_temp = pd.DataFrame(columns=column_header)
+			dfs.append(df_temp)
+		df = ou.merge_df_list(dfs, 'v')
+		df = df[column_header]
+
 	elif broker == 'JPM':
 		df = pd.DataFrame(columns=column_header)
-		for date_tmp in [date, date - BDay(1)]:
-			filepath = get_swap_settlement_report_path(broker, date_tmp, ops_param,
-													   verbose=False if date_tmp == date else True)
-			if filepath is not None:
-				df = pd.read_csv(filepath)
-				df.columns = column_header
-				df = df[df['Level'] == 'Trade']
-				df = df[df['Event'] == 'Unwind']
-				df = df[df['Swap Pay Date'] == date.strftime('%Y-%m-%d')]
-				df = df[df['Settlement Status'] == 'SETTLED']
-				if df.empty:
-					logger.warning('There is no {} swap unwind cashflow on settle date = {} as sourced from {}'.format(broker,date,filepath))
-				break
-			else:
-				continue
+		filepath = get_swap_settlement_report_path(broker, to_date(date - BDay(1)), ops_param,)
+		if filepath is not None:
+			df = pd.read_csv(filepath)
+			df.columns = column_header
+			df = df[df['Level'] == 'Trade']
+			if df.empty:
+				logger.warning('There is no {} swap unwind cashflow on settle date = {} as sourced from {}'.format(broker,date,filepath))
+
+		# calculate reset financing if any
+		df_reset = df[(df['Event'] == 'Reset')&(df['Settlement Status']=='UNSETTLED')]
+		if not df_reset.empty:
+			print('Calculating cfd interest...', flush=True)
+			reset_interest_sum = df_reset['Net Amount (Pay Currency)'].sum()
+		#restructure the unwind part of df
+		df = ou.merge_df_list([df_reset, df[(df['Event'] == 'Unwind')&(df['Swap Pay Date'] == date.strftime('%Y-%m-%d'))]],'v')
+
 	elif broker == 'MS':
 		df = pd.DataFrame(columns=column_header)
-		for date_tmp in [date, date - BDay(1)]:
-			filepath = get_swap_settlement_report_path(broker, date_tmp, ops_param,
-													   verbose=False if date_tmp == date else True)
-			if filepath is not None:
-				df = pd.read_csv(filepath, skiprows=1)
-				df.columns = column_header
-				df = df[df['Account Number'] == '038CAFIQ0']
-				df = df[df['Payment Date'] == date.strftime('%Y-%m-%d')]
-				df = df[df['Event'] == 'Unwind']
-				if df.empty:
-					logger.warning('There is no {} swap unwind cashflow on settle date = {} as sourced from {}'.format(broker,date,filepath))
-				break
-			else:
-				continue
+		filepath = get_swap_settlement_report_path(broker, to_date(date - BDay(1)), ops_param)
+		if filepath is not None:
+			df = pd.read_csv(filepath, skiprows=1)
+			df.columns = column_header
+			df = df[df['Account Number'] == '038CAFIQ0']
+			df = df[df['Payment Date'] == date.strftime('%Y-%m-%d')]
+			if df.empty:
+				logger.warning('There is no {} swap unwind cashflow on settle date = {} as sourced from {}'.format(broker,date,filepath))
+		# calculate reset financing if any
+		df_reset = df[df['Event'] == 'Reset']
+		if not df_reset.empty:
+			print('Calculating cfd interest...', flush=True)
+			reset_interest_sum = df_reset['Financing Amount'].sum()
+		# restructure the unwind part of df
+		df = ou.merge_df_list([df_reset, df[df['Event'] == 'Unwind']],'v')
 
-	return df
+	return df, reset_interest_sum
 
 
 def load_zen_settled_cash_div(broker, date, ops_param):
@@ -431,39 +459,6 @@ def reconcile_broker_settled_cash_dividend(broker, date, ops_param, column_heade
 		if result:
 			result_df = pd.DataFrame(result)[columns_to_keep]
 		return result_df
-	# def _helper(df_zen, df_broker, broker, bb_code_col_name, settle_date_col_name, net_amount_col_name):
-	# 	perf_dict1 = df_zen.groupby('bb_code')['cash_local'].sum().to_dict()
-	# 	perf_dict2 = df_broker.groupby(bb_code_col_name)[net_amount_col_name].sum().to_dict()
-	#
-	# 	all_bb_codes = set(perf_dict1) | set(perf_dict2)
-	# 	result = []
-	# 	for bb in all_bb_codes:
-	# 		p1 = perf_dict1.get(bb)
-	# 		p2 = float(perf_dict2.get(bb)) if perf_dict2.get(bb) is not None else None
-	# 		if p1 is None:
-	# 			flag = 'div break - Zen missing'
-	# 		elif p2 is None:
-	# 			flag = 'div break - {} missing'.format(broker)
-	# 		elif abs(p1 - p2) > break_threshold:
-	# 			flag = 'div break - diff > {}'.format(break_threshold)
-	# 		else:
-	# 			flag = ''
-	# 		result.append(
-	# 			{
-	# 				'break': flag,
-	# 				'bb_code': bb,
-	# 				'trade_date': '',
-	# 				'settle_date': '',
-	# 				'{}_NetAmount'.format(broker): p2,
-	# 				'Z_NetAmount': p1,
-	# 				'diff': (p2 or 0) - (p1 or 0),
-	# 			}
-	# 		)
-	# 	columns_to_keep = ['break', 'bb_code', '{}_NetAmount'.format(broker), 'Z_NetAmount', 'diff']
-	# 	result_df = pd.DataFrame(columns=columns_to_keep)
-	# 	if result:
-	# 		result_df = pd.DataFrame(result)[columns_to_keep]
-	# 	return result_df
 
 	logger.clear_log()
 	df_broker = load_broker_settled_cash_div(broker, date, ops_param, column_header)
@@ -509,7 +504,7 @@ def reconcile_broker_settled_cash_dividend(broker, date, ops_param, column_heade
 			df_zen = load_zen_settled_cash_div(broker, settle_date, ops_param)
 			df_break_tmp = _helper(
 				df_zen=df_zen,
-				df_broker=df_broker[df_broker['Swap Pay Date'] == settle_date],
+				df_broker=df_broker[df_broker['Swap Pay Date'] == settle_date].copy(),
 				broker=broker,
 				settle_date_col_name='Swap Pay Date',
 				bb_code_col_name='Bloomberg Code',
@@ -525,7 +520,7 @@ def reconcile_broker_settled_cash_dividend(broker, date, ops_param, column_heade
 			df_zen = load_zen_settled_cash_div(broker, settle_date, ops_param)
 			df_break_tmp = _helper(
 				df_zen=df_zen,
-				df_broker=df_broker[df_broker['Valuation Date'] == settle_date],
+				df_broker=df_broker[df_broker['Valuation Date'] == settle_date].copy(),
 				broker=broker,
 				settle_date_col_name='Payment Date',
 				bb_code_col_name='Bloomberg ID',
@@ -536,7 +531,7 @@ def reconcile_broker_settled_cash_dividend(broker, date, ops_param, column_heade
 
 	df_temp = pd.read_csv(output_path + 'BREAK_sea_{}.csv'.format(broker.lower()))
 	#add seperator to break file (legacy compatibile)
-	df_temp.loc[len(df_temp.index),'bb_code'] = '-----div------'
+	df_temp.loc[len(df_temp),'break'] = '-'*65 + 'DIVIDEND' + '-'*65
 
 	#concat div break to cfd break
 	columns_order = df_temp.columns.tolist()
@@ -588,12 +583,13 @@ def reconcile_broker_swap_settlement_cashflow(broker, date, ops_param, column_he
 
 	logger.clear_log()
 	df_zen = load_zen_unwind_performance(broker, date, ops_param)
-	df_broker = load_broker_swap_settlement_cashflow(broker, date, ops_param, column_header, trade_dates=set(df_zen.loc[:, 'date']))
+	df_broker, reset_interest_sum = load_broker_swap_settlement_cashflow(broker, date, ops_param, column_header, trade_dates=set(df_zen.loc[:, 'date']))
+	# pick the unwind trades only for df break
 	if broker == 'GS':
 		df_break = _helper(
 			df_zen=df_zen,
 			df_broker=(
-				df_broker
+				df_broker[df_broker['Open/Close'] == 'Close']
 				.merge(ticker_map[['ric', 'bb_code']], left_on='Underlyer RIC', right_on='ric', how='left')
 			),
 			broker=broker,
@@ -647,7 +643,7 @@ def reconcile_broker_swap_settlement_cashflow(broker, date, ops_param, column_he
 	elif broker == 'JPM':
 		df_break = _helper(
 			df_zen=df_zen,
-			df_broker=df_broker,
+			df_broker=df_broker[df_broker['Event']=='Unwind'].copy(),
 			broker=broker,
 			trade_date_col_name='Trade Date',
 			bb_code_col_name='Bloomberg Code',
@@ -661,7 +657,7 @@ def reconcile_broker_swap_settlement_cashflow(broker, date, ops_param, column_he
 	elif broker == 'MS':
 		df_break = _helper(
 			df_zen=df_zen,
-			df_broker=df_broker,
+			df_broker=df_broker[df_broker['Event']=='Unwind'].copy(),
 			broker=broker,
 			trade_date_col_name='Effective Trade Date',
 			bb_code_col_name='Bloomberg ID',
@@ -687,28 +683,26 @@ def reconcile_broker_swap_settlement_cashflow(broker, date, ops_param, column_he
 	df_break.to_csv(output_path + 'BREAK_sea_{}.csv'.format(broker.lower()), index=False)
 
 	# output another df_break for the balance reading
-	df_break[df_break.columns[1:].tolist() + [df_break.columns[0]]].to_csv(output_path + 'BREAK_sea_{}_for_balance.csv'.format(broker.lower()), index=False)
+	df_break[['trade_date','settle_date','settle_date','bb_code','{}_NetAmount'.format(broker),'Z_NetAmount','diff','break']].to_csv(output_path + 'BREAK_sea_{}_for_balance.csv'.format(broker.lower()), index=False)
 
 	# add log to break file (legacy compatibile)
 	merge_txt_to_csv(output_path + 'BREAK_sea_{}.csv'.format(broker.lower()), log_file, 'break')
 
 	# add sum to break file csv (legacy compatibile)
 	df_temp = pd.read_csv(output_path + 'BREAK_sea_{}.csv'.format(broker.lower()))
-
 	df_temp['abs_diff'] = abs(df_temp['diff'])  # sort by abs diff to fix the sequence
 	df_temp = df_temp.sort(columns=['abs_diff'], ascending=[False])
 	df_temp = df_temp.drop('abs_diff', axis=1)
+	df_temp.loc[len(df_temp.index), ['Z_NetAmount', 'diff']] = ['sum of performance break <={}'.format(break_threshold),round(df_break[df_break['break'] == ""].loc[:,'diff'].sum(), 2)]
+	df_temp.loc[len(df_temp.index), ['Z_NetAmount', 'diff']] = ['sum of performance break >{}'.format(break_threshold),round(df_break[df_break['break'] == "break - diff > {}".format(break_threshold)].loc[:, 'diff'].sum(), 2)]
+	df_temp.loc[len(df_temp.index), ['Z_NetAmount', 'diff']] = ['sum of performance break'.format(break_threshold),round(df_break.loc[:, 'diff'].sum(), 2)]
+	df_temp.to_csv(output_path + 'BREAK_sea_{}.csv'.format(broker.lower()), index=False)
 
-	df_temp.loc[len(df_temp.index), ['Z_NetAmount', 'diff']] = ['sum of performance break <={}'.format(break_threshold),
-																round(df_break[df_break['break'] == ""].loc[:,'diff'].sum(), 2)
-																]
-	df_temp.loc[len(df_temp.index), ['Z_NetAmount', 'diff']] = ['sum of performance break >{}'.format(break_threshold),
-																round(df_break[df_break['break'] == "break - diff > {}".format(break_threshold)].loc[:, 'diff'].sum(), 2)
-																]
-	df_temp.loc[len(df_temp.index), ['Z_NetAmount', 'diff']] = ['sum of performance break'.format(break_threshold),
-																round(df_break.loc[:, 'diff'].sum(), 2)
-																]
-
+	#add CFD reset financing sum to break file csv (legacy compatible)
+	df_temp = pd.read_csv(output_path + 'BREAK_sea_{}.csv'.format(broker.lower()))
+	if reset_interest_sum:
+		df_temp.loc[len(df_temp.index), 'Z_NetAmount'] = '-'*10 + 'CFD INTEREST' + '-'*10
+		df_temp.loc[len(df_temp.index), ['Z_NetAmount', 'diff']] = ['{} CFD Interest'.format(get_previous_month(date)), reset_interest_sum]
 	df_temp.to_csv(output_path + 'BREAK_sea_{}.csv'.format(broker.lower()), index=False)
 
 	return
@@ -730,7 +724,8 @@ def main(argv):
 	if (len(argv) > 0) and (type(ou.text2date(argv[0])) == datetime.date):
 		print("paramenters 0 " + argv[0])
 		# input date from v2 is T-1 so plus 1 bd to get T
-		date = ou.text2date(argv[0]) + BDay(1)
+		# idea is that T-1 report are all available
+		date = to_date(ou.text2date(argv[0]) + BDay(1))
 	if (len(argv) > 1) and argv[1] in ['GS', 'BOAML', 'UBS', 'JPM', 'MS']:
 		print("paramenters 1 " + argv[1])
 		broker = argv[1]
@@ -738,11 +733,11 @@ def main(argv):
 	# break threshold is usd10 for both
 	print('--------------------------------------------------------------------------------------------', flush=True)
 	print('Doing unwind cfd performance rec for {} on settle_date = {}'.format(broker, date.strftime('%Y-%m-%d')),flush=True)
-	reconcile_broker_swap_settlement_cashflow(broker, date, ops_param, column_headers[broker],break_threshold=10)
+	reconcile_broker_swap_settlement_cashflow(broker, date, ops_param, column_headers[broker], break_threshold=10)
 
 	print('--------------------------------------------------------------------------------------------', flush=True)
 	print('Doing cash dividend rec for {} on settle_date = {}'.format(broker, date.strftime('%Y-%m-%d')),flush=True)
-	reconcile_broker_settled_cash_dividend(broker, date, ops_param, column_headers[broker],break_threshold=10)
+	reconcile_broker_settled_cash_dividend(broker, date, ops_param, column_headers[broker], break_threshold=10)
 
 
 if (__name__ == '__main__'):
