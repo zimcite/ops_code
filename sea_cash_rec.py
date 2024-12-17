@@ -1,5 +1,7 @@
 import os
 import datetime
+import pdb
+
 import pandas as pd
 from pandas.tseries.offsets import BDay
 import sys
@@ -250,6 +252,7 @@ def load_broker_swap_settlement_cashflow(broker, date, ops_param, column_header,
 				df_temp = pd.read_csv(filepath)
 				df_temp = df_temp[df_temp['Account Name'] == 'BLUEHARBOUR MAP I LP-ZENTIFIC']
 				df_temp = df_temp[df_temp['Settle Date'] == date.strftime('%m/%d/%Y')]
+				df_temp = df_temp[df_temp['Cancel'].astype(str)!= "Cncelled"]
 				if df_temp.empty:
 					logger.warning('There is no {} swap unwind cashflow on settle date = {} as sourced from {}'.format(broker, date,filepath))
 					df_temp = pd.DataFrame(columns=column_header)
@@ -626,10 +629,9 @@ def reconcile_broker_swap_settlement_cashflow(broker, date, ops_param, column_he
 	elif broker == 'UBS':
 		df_break = _helper(
 			df_zen=df_zen,
-			df_broker=(
-				df_broker
-				.merge(ticker_map[['ric', 'bb_code']], left_on='RIC', right_on='ric', how='left')
-				.apply(lambda x: x.apply(ou.text2no) if x.name == 'Net PnL' else x)
+			df_broker=(df_broker.merge(ticker_map[['ric', 'bb_code']], left_on='RIC', right_on='ric', how='left')
+					   .merge(ticker_map[['isin', 'bb_code']], left_on='ISIN', right_on='isin', how='left',suffixes=('_ric', ''))
+					   .apply(lambda x: x.apply(ou.text2no) if x.name == 'Net PnL' else x)
 			),
 			broker=broker,
 			trade_date_col_name='Trade Date',
