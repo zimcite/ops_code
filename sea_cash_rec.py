@@ -369,7 +369,7 @@ def load_broker_settled_cash_div(broker, date, ops_param, column_header):
 					raise
 			df.columns = column_header
 			df = df[df['Payment Date'] == date]
-			df = df[df['Reset Record Code'] == 'RDV']
+			df = df[df['Reset Record Code'].astype(str) == 'RDV']
 			if df.empty:
 				logger.warning('There is no {} cash dividend settled on {} as sourced from {}'.format(broker, date, filepath))
 
@@ -494,6 +494,7 @@ def reconcile_broker_settled_cash_dividend(broker, date, ops_param, column_heade
 			df_zen=df_zen,
 			df_broker=(df_broker
 					   .merge(ticker_map[['sedol', 'bb_code']], left_on='Sedol', right_on='sedol', how='left')
+					   .apply(lambda x: x.apply(ou.text2no) if x.name == 'Net Amount' else x)
 					   ),
 			broker=broker,
 			settle_date_col_name='Settle Date',
@@ -549,6 +550,28 @@ def reconcile_broker_settled_cash_dividend(broker, date, ops_param, column_heade
 
 def reconcile_broker_swap_settlement_cashflow(broker, date, ops_param, column_header, break_threshold):
 	def _helper(df_zen, df_broker, broker, bb_code_col_name, trade_date_col_name, performance_col_name):
+
+		#check for missing bb_code
+		missing_bb = df_broker[df_broker[bb_code_col_name].isnull()]
+		#try manual mapping
+		manual_map = {'UMSI.SI': 'UMSH SP',
+					  'SEAT.SI':'STM SP'}
+		if not missing_bb.empty:
+			mask = df_broker['bb_code'].isnull()
+			if broker == 'GS':
+				df_broker.loc[mask, 'bb_code'] = df_broker.loc[mask, 'Underlyer RIC'].map(manual_map)
+			elif broker == 'UBS':
+				df_broker.loc[mask, 'bb_code'] = df_broker.loc[mask, 'RIC'].map(manual_map)
+		#re-check
+		if not df_broker[df_broker[bb_code_col_name].isnull()].empty:
+			logger.debug("Missing Bloomberg codes for below, please add to manual mapping in code")
+			if broker == 'GS':
+				missing_bb = df_broker[df_broker[bb_code_col_name].isnull()][['Underlyer Name', 'Underlyer RIC', 'Underlyer ISIN']].drop_duplicates()
+			elif broker == 'UBS':
+				missing_bb = df_broker[df_broker[bb_code_col_name].isnull()][['Security Description', 'ISIN', 'RIC']].drop_duplicates()
+			print(missing_bb, flush=True)
+			sys.exit()
+
 		df_broker[trade_date_col_name] = pd.to_datetime(df_broker[trade_date_col_name]).apply(lambda x: x.date())
 		perf_dict1 = (df_zen.groupby(['bb_code', 'date'])['accrued_fin'].sum() +
 					  df_zen.groupby(['bb_code', 'date'])['cash_local'].sum()).to_dict()
@@ -627,12 +650,13 @@ def reconcile_broker_swap_settlement_cashflow(broker, date, ops_param, column_he
 
 
 	elif broker == 'UBS':
+		df_broker = (df_broker.merge(ticker_map[['ric', 'bb_code']], left_on='RIC', right_on='ric', how='left')
+					 .apply(lambda x: x.apply(ou.text2no) if x.name == 'Net PnL' else x)
+					 )
+
 		df_break = _helper(
 			df_zen=df_zen,
-			df_broker=(df_broker.merge(ticker_map[['ric', 'bb_code']], left_on='RIC', right_on='ric', how='left')
-					   .merge(ticker_map[['isin', 'bb_code']], left_on='ISIN', right_on='isin', how='left',suffixes=('_ric', ''))
-					   .apply(lambda x: x.apply(ou.text2no) if x.name == 'Net PnL' else x)
-			),
+			df_broker=df_broker,
 			broker=broker,
 			trade_date_col_name='Trade Date',
 			bb_code_col_name='bb_code',
@@ -640,7 +664,7 @@ def reconcile_broker_swap_settlement_cashflow(broker, date, ops_param, column_he
 		)
 		# to align df_broker with legacy V2 file
 		df_broker.rename(columns={'Net PnL': 'UBS_NetAmount'}, inplace=True)
-		df_broker.insert(22, 'bb_code', ticker_map.set_index('ric', drop=True).loc[df_broker['RIC'], 'bb_code'].values)
+		df_broker.insert(22, 'bb_code', df_broker.pop('bb_code'))
 
 	elif broker == 'JPM':
 		df_break = _helper(
