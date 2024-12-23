@@ -33,16 +33,23 @@ def merge_txt_to_csv(csv_path, txt_path, column_name):
 	df.to_csv(csv_path, index=False)
 	return
 
-def is_month_end(d):
-	"""d is datetime.date object"""
-	next_day = d + datetime.timedelta(days=1)
-	return d.month != next_day.month
+# def is_month_end(d):
+# 	"""d is datetime.date object"""
+# 	if d.weekday() >= 5:
+# 		return False
+# 	next_day = d + datetime.timedelta(days=1)
+#
+# 	while next_day.month == d.month:
+# 		if next_day.weekday() < 5:
+# 			return False
+# 		next_day += datetime.timedelta(days=1)
+#
+# 	return True
+
 
 def get_previous_month(d):
 	"""d is datetime.date object"""
-	MS_date = datetime.date(d.year, d.month, 1)
-	last_ME_date = MS_date - datetime.timedelta(days=1)
-	return last_ME_date.strftime("%b %y")
+	return datetime.date(d.year, d.month-1, 1).strftime("%b %y")
 
 def get_past_bdays(d, num=5):
 	"""d is datetime.date object"""
@@ -170,7 +177,7 @@ def load_broker_swap_settlement_cashflow(broker, date, ops_param, column_header,
 	# | GS     | Paid at ME         | Paid at ME       | Paid at ME    | ME date cfd daily activity report
 	# | BOAML  | Paid when unwind   | Paid after ME    | Paid at ME    | ME/ME+1 date lawrence (sd ME+2/ME+3) - same behaviour as swap unwind performance
 	# | UBS    | Paid after ME      | Paid after ME    | Paid after ME | ME+1 date cash activity report (sd ME+1)
-	# | JPM    | Paid when unwind   | Paid after ME    | Paid after ME | ME date settlement report
+	# | JPM    | Paid when unwind   | Paid at ME    | Paid after ME | ME date settlement report
 	# | MS     | Paid when unwind   | Paid after ME    | Paid after ME | ME/ME+1 date 24MX - same behaviour as swap unwind performance
 	# +--------+--------------------+------------------+---------------+-----------------------------------------+
 
@@ -185,6 +192,7 @@ def load_broker_swap_settlement_cashflow(broker, date, ops_param, column_header,
 		-  T-1 settlement report
 	'''
 	reset_interest_sum = 0
+	reset_interest_month = None
 	if broker == 'GS':
 		#unwind cfd sett
 		dfs = []
@@ -202,17 +210,17 @@ def load_broker_swap_settlement_cashflow(broker, date, ops_param, column_header,
 			dfs.append(df_temp)
 		df = ou.merge_df_list(dfs, 'v')
 
-		#ME cfd interest
-		if is_month_end(to_date(date-BDay(1))):
-			filepath = get_swap_activity_report_path(broker, to_date(date-BDay(1)), ops_param)
-			df_reset = pd.read_excel(filepath, skiprows=7)
-			df_reset.columns = column_header
-			df_reset = df_reset[df_reset['Event'] == 'Financing Payment']
-			df_reset = df_reset[df_reset['Settle Date'] == to_date(date-BDay(1)).strftime('%d %b %Y')]
-			reset_interest_sum = df_reset['Net Amount (Settle CCY)'].sum()
-			if reset_interest_sum:
-				print('Calculating cfd interest...', flush=True)
-				df = pd.concat([df_reset, df], axis=0)
+		#ME cfd interest; usually ME date, sometimes ME date + 1
+		filepath = get_swap_activity_report_path(broker, to_date(date-BDay(1)), ops_param)
+		df_reset = pd.read_excel(filepath, skiprows=7)
+		df_reset.columns = column_header
+		df_reset = df_reset[df_reset['Event'] == 'Financing Payment']
+		#df_reset = df_reset[df_reset['Settle Date'] == to_date(date-BDay(1)).strftime('%d %b %Y')]
+		reset_interest_sum = df_reset['Net Amount (Settle CCY)'].sum()
+		if reset_interest_sum:
+			print('Calculating cfd interest...', flush=True)
+			reset_interest_month = datetime.datetime.strptime(df_reset['Settle Date'].iloc[0], '%d %b %Y').date().strftime("%b %y")
+			df = pd.concat([df_reset, df], axis=0)
 
 	elif broker == 'BOAML':
 		dfs = []
@@ -241,10 +249,11 @@ def load_broker_swap_settlement_cashflow(broker, date, ops_param, column_header,
 		df_reset = df[(df['Action'] == 'Reset') & (df['Reset Record Code'] == 'RFIN')]
 		if not df_reset.empty:
 			print('Calculating cfd interest...', flush=True)
+			reset_interest_month = get_previous_month(df_temp['Payment Date'].iloc[0])
 			reset_interest_sum = df_reset['Total Pay CCY'].sum()
 
 	elif broker == 'UBS':
-
+		# can only found reset financing in cash report with no breakdown
 		dfs = []
 		for trade_date in sorted(trade_dates | get_past_bdays(date)):
 			filepath = get_swap_settlement_report_path(broker, trade_date, ops_param)
@@ -283,6 +292,7 @@ def load_broker_swap_settlement_cashflow(broker, date, ops_param, column_header,
 		df_reset = df[(df['Event'] == 'Reset')&(df['Settlement Status']=='UNSETTLED')]
 		if not df_reset.empty:
 			print('Calculating cfd interest...', flush=True)
+			reset_interest_month = datetime.datetime.strptime(df['Swap Pay Date'].iloc[0], '%Y-%m-%d').date().strftime("%b %y")
 			reset_interest_sum = df_reset['Net Amount (Pay Currency)'].sum()
 		#restructure the unwind part of df
 		df = ou.merge_df_list([df_reset, df[(df['Event'] == 'Unwind')&(df['Swap Pay Date'] == date.strftime('%Y-%m-%d'))]],'v')
@@ -301,11 +311,13 @@ def load_broker_swap_settlement_cashflow(broker, date, ops_param, column_header,
 		df_reset = df[df['Event'] == 'Reset']
 		if not df_reset.empty:
 			print('Calculating cfd interest...', flush=True)
+			reset_interest_month = datetime.datetime.strptime(df['Effective Trade Date'].iloc[0], '%Y-%m-%d').date().strftime("%b %y")
 			reset_interest_sum = df_reset['Financing Amount'].sum()
+
 		# restructure the unwind part of df
 		df = ou.merge_df_list([df_reset, df[df['Event'] == 'Unwind']],'v')
 
-	return df, reset_interest_sum
+	return df, reset_interest_sum, reset_interest_month
 
 
 def load_zen_settled_cash_div(broker, date, ops_param):
